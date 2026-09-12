@@ -111,6 +111,64 @@ func TestBadPost(t *testing.T) {
 	}
 }
 
+func TestPatchTitleOnly(t *testing.T) {
+	resetStore()
+	w := handler("", "POST", `{"title":"old"}`)
+	var todo Todo
+	json.NewDecoder(w.Body).Decode(&todo)
+
+	w2 := handler("/"+todo.ID, "PATCH", `{"title":"new title"}`)
+	if w2.Code != 200 {
+		t.Fatalf("PATCH expected 200, got %d", w2.Code)
+	}
+	var updated Todo
+	json.NewDecoder(w2.Body).Decode(&updated)
+	if updated.Title != "new title" {
+		t.Fatalf("expected new title, got %q", updated.Title)
+	}
+	if updated.Done {
+		t.Fatal("done should have stayed false")
+	}
+
+	w3 := handler("/"+todo.ID, "PATCH", `{"done":true}`)
+	if w3.Code != 200 {
+		t.Fatalf("PATCH expected 200, got %d", w3.Code)
+	}
+	var updated2 Todo
+	json.NewDecoder(w3.Body).Decode(&updated2)
+	if !updated2.Done {
+		t.Fatal("expected done=true after patch")
+	}
+	if updated2.Title != "new title" {
+		t.Fatalf("title should have stayed %q, got %q", "new title", updated2.Title)
+	}
+}
+
+func TestPatchNonexistent(t *testing.T) {
+	resetStore()
+	w := handler("/999", "PATCH", `{"title":"x"}`)
+	if w.Code != 404 {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestPatchEmptyBody(t *testing.T) {
+	resetStore()
+	w := handler("", "POST", `{"title":"old"}`)
+	var todo Todo
+	json.NewDecoder(w.Body).Decode(&todo)
+
+	w2 := handler("/"+todo.ID, "PATCH", `{}`)
+	if w2.Code != 400 {
+		t.Fatalf("PATCH {} expected 400, got %d", w2.Code)
+	}
+
+	w3 := handler("", "PATCH", `{"title":"x"}`)
+	if w3.Code != 400 {
+		t.Fatalf("PATCH empty path expected 400, got %d", w3.Code)
+	}
+}
+
 // fakeDurable is a DurableLister for unit tests -- no live Postgres.
 type fakeDurable struct {
 	todos []pgstore.Todo

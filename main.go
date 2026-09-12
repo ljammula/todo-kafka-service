@@ -73,6 +73,24 @@ func (s *Store) Update(id string, title string, done bool) (Todo, bool) {
 	return Todo{}, false
 }
 
+func (s *Store) Patch(id string, title *string, done *bool) (Todo, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, t := range s.todos {
+		if t.ID == id {
+			if title != nil {
+				t.Title = *title
+			}
+			if done != nil {
+				t.Done = *done
+			}
+			s.todos[i] = t
+			return t, true
+		}
+	}
+	return Todo{}, false
+}
+
 func (s *Store) Delete(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -156,6 +174,30 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if t, ok := store.Update(path, body.Title, body.Done); ok {
+			jsonNewline(t, w)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		return
+
+	case http.MethodPatch:
+		if path == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Title *string `json:"title"`
+			Done  *bool   `json:"done"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if body.Title == nil && body.Done == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if t, ok := store.Patch(path, body.Title, body.Done); ok {
 			jsonNewline(t, w)
 			return
 		}
