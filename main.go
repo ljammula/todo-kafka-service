@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"todo-service/event"
+	"todo-service/pgstore"
 )
 
 type Todo struct {
@@ -85,6 +86,19 @@ func (s *Store) Delete(id string) bool {
 }
 
 var store = NewStore()
+
+// DurableLister is the seam between handleTodosDurable and the real
+// pgstore.Store, so main_test.go's unit tests never need a live Postgres
+// -- the same injectable-dependency shape publisher uses in
+// publisher.go. pgstore.Store already satisfies this shape.
+type DurableLister interface {
+	List() ([]pgstore.Todo, error)
+}
+
+// durableStore is nil by default so `go test ./...` and any run without
+// TODO_DATABASE_URL set don't require a reachable Postgres -- main wires
+// in a real pgstore.Store only when TODO_DATABASE_URL is set.
+var durableStore DurableLister
 
 func handleTodos(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/todos")
@@ -165,6 +179,26 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleTodosDurable(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if durableStore == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		todos, err := durableStore.List()
+		if err != nil {
+			log.Printf("list durable todos: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		jsonNewline(todos, w)
+		return
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func jsonNewline(v any, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
@@ -185,8 +219,25 @@ func main() {
 		log.Printf("publishing %s to kafka brokers %s, topic %q", event.TodosCreatedTopic, brokers, topic)
 	}
 
+	// durableStore stays nil (see DurableLister above) unless
+	// TODO_DATABASE_URL is set -- a missing or unreachable Postgres must
+	// not prevent the API from serving its existing endpoints, so a
+	// connect failure only logs and continues, mirroring how the Kafka
+	// wiring above simply does nothing when KAFKA_BROKERS is unset.
+	if dsn := os.Getenv("TODO_DATABASE_URL"); dsn != "" {
+		ds, err := pgstore.New(dsn)
+		if err != nil {
+			log.Printf("connect durable store: %v -- /todos/durable will be unavailable", err)
+		} else {
+			defer ds.Close()
+			durableStore = ds
+			log.Printf("durable store connected")
+		}
+	}
+
 	http.HandleFunc("/todos", handleTodos)
 	http.HandleFunc("/todos/", handleTodos)
+	http.HandleFunc("/todos/durable", handleTodosDurable)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

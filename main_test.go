@@ -3,8 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"todo-service/pgstore"
 )
 
 func handler(path string, method string, body string) *httptest.ResponseRecorder {
@@ -104,6 +108,74 @@ func TestBadPost(t *testing.T) {
 	w := handler("", "POST", `{"title":""}`)
 	if w.Code != 400 {
 		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+// fakeDurable is a DurableLister for unit tests -- no live Postgres.
+type fakeDurable struct {
+	todos []pgstore.Todo
+	err   error
+}
+
+func (f fakeDurable) List() ([]pgstore.Todo, error) { return f.todos, f.err }
+
+func TestTodosDurableList(t *testing.T) {
+	resetStore()
+	prev := durableStore
+	durableStore = fakeDurable{todos: []pgstore.Todo{{ID: "1", Title: "a"}, {ID: "2", Title: "b", Done: true}}}
+	defer func() { durableStore = prev }()
+
+	req := httptest.NewRequest(http.MethodGet, "/todos/durable", nil)
+	w := httptest.NewRecorder()
+	handleTodosDurable(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var todos []pgstore.Todo
+	if err := json.NewDecoder(w.Body).Decode(&todos); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(todos) != 2 || todos[0].ID != "1" || todos[0].Title != "a" || todos[1].ID != "2" || todos[1].Title != "b" || !todos[1].Done {
+		t.Fatalf("unexpected todos: %+v", todos)
+	}
+}
+
+func TestTodosDurableNilStore(t *testing.T) {
+	prev := durableStore
+	durableStore = nil
+	defer func() { durableStore = prev }()
+
+	req := httptest.NewRequest(http.MethodGet, "/todos/durable", nil)
+	w := httptest.NewRecorder()
+	handleTodosDurable(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestTodosDurableListError(t *testing.T) {
+	prev := durableStore
+	durableStore = fakeDurable{err: errors.New("boom")}
+	defer func() { durableStore = prev }()
+
+	req := httptest.NewRequest(http.MethodGet, "/todos/durable", nil)
+	w := httptest.NewRecorder()
+	handleTodosDurable(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestTodosDurableMethodNotAllowed(t *testing.T) {
+	prev := durableStore
+	durableStore = nil
+	defer func() { durableStore = prev }()
+
+	req := httptest.NewRequest(http.MethodPost, "/todos/durable", nil)
+	w := httptest.NewRecorder()
+	handleTodosDurable(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
 	}
 }
 
