@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"todo-service/pgstore"
@@ -177,6 +178,88 @@ type fakeDurable struct {
 
 func (f fakeDurable) List() ([]pgstore.Todo, error) { return f.todos, f.err }
 
+type countingDurable struct {
+	calls int
+}
+
+func (f *countingDurable) List() ([]pgstore.Todo, error) {
+	f.calls++
+	return nil, nil
+}
+
+func durableRequest(method, target string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, target, nil)
+	w := httptest.NewRecorder()
+	handleTodosDurable(w, req)
+	return w
+}
+
+func TestTodosDurableFilters(t *testing.T) {
+	prev := durableStore
+	durableStore = fakeDurable{todos: []pgstore.Todo{
+		{ID: "first", Title: "open", Done: false},
+		{ID: "second", Title: "closed", Done: true},
+		{ID: "third", Title: "also closed", Done: true},
+	}}
+	defer func() { durableStore = prev }()
+
+	for _, test := range []struct {
+		query string
+		want  []string
+	}{
+		{"", []string{"first", "second", "third"}},
+		{"?done=true", []string{"second", "third"}},
+		{"?done=false", []string{"first"}},
+	} {
+		w := durableRequest(http.MethodGet, "/todos/durable"+test.query)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", test.query, w.Code)
+		}
+		var got []pgstore.Todo
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatalf("%s: decode: %v", test.query, err)
+		}
+		if len(got) != len(test.want) {
+			t.Fatalf("%s: got %d todos, want %d: %+v", test.query, len(got), len(test.want), got)
+		}
+		for i, id := range test.want {
+			if got[i].ID != id {
+				t.Fatalf("%s: item %d is %q, want %q", test.query, i, got[i].ID, id)
+			}
+		}
+	}
+}
+
+func TestTodosDurableEmptyFilterIsArray(t *testing.T) {
+	prev := durableStore
+	durableStore = fakeDurable{todos: []pgstore.Todo{{ID: "open"}}}
+	defer func() { durableStore = prev }()
+
+	w := durableRequest(http.MethodGet, "/todos/durable?done=true")
+	if w.Code != http.StatusOK || w.Body.String() != "[]\n" {
+		t.Fatalf("expected empty JSON array, got status %d body %q", w.Code, w.Body.String())
+	}
+}
+
+func TestTodosDurableRejectsInvalidDoneWithoutReading(t *testing.T) {
+	for _, query := range []string{"?done=", "?done=TRUE", "?done=1", "?done=bogus"} {
+		lister := &countingDurable{}
+		prev := durableStore
+		durableStore = lister
+		w := durableRequest(http.MethodGet, "/todos/durable"+query)
+		durableStore = prev
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d", query, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "done must be true or false") {
+			t.Errorf("%s: unexpected error %q", query, w.Body.String())
+		}
+		if lister.calls != 0 {
+			t.Errorf("%s: durable store was read %d times", query, lister.calls)
+		}
+	}
+}
+
 func TestTodosDurableList(t *testing.T) {
 	resetStore()
 	prev := durableStore
@@ -237,12 +320,12 @@ func TestTodosDurableMethodNotAllowed(t *testing.T) {
 	}
 }
 
-type countingDurable struct {
+type countingStatsDurable struct {
 	todos []pgstore.Todo
 	calls *int
 }
 
-func (f countingDurable) List() ([]pgstore.Todo, error) {
+func (f countingStatsDurable) List() ([]pgstore.Todo, error) {
 	(*f.calls)++
 	return f.todos, nil
 }
@@ -306,7 +389,7 @@ func TestTodosDurableStatsMethodRejectedBeforeRead(t *testing.T) {
 	prev := durableStore
 	defer func() { durableStore = prev }()
 	calls := 0
-	durableStore = countingDurable{calls: &calls}
+	durableStore = countingStatsDurable{calls: &calls}
 	w := httptest.NewRecorder()
 	handleTodosDurableStats(w, httptest.NewRequest(http.MethodPost, "/todos/durable/stats", nil))
 	if w.Code != http.StatusMethodNotAllowed {

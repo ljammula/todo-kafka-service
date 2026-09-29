@@ -243,6 +243,112 @@ func TestDurableStatsHTTPThroughListCache(t *testing.T) {
 	}
 }
 
+// TestDurableEndpointFiltering exercises the endpoint's filtering over the
+// real Postgres-backed read-through cache. The filtered requests deliberately
+// follow the cold complete read so they must use the same cached complete list.
+func TestDurableEndpointFiltering(t *testing.T) {
+	rdb := connectRedis(t)
+	ctx := context.Background()
+	ds, err := pgstore.New(requireEnv(t, "TODO_DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("connect to postgres: %v", err)
+	}
+	t.Cleanup(func() { ds.Close() })
+
+	if err := cache.InvalidateDurableList(ctx, rdb); err != nil {
+		t.Fatalf("clear cache: %v", err)
+	}
+	t.Cleanup(func() { cache.InvalidateDurableList(ctx, rdb) })
+
+	suffix := time.Now().UnixNano()
+	openID := fmt.Sprintf("verify-integration-filter-open-%d", suffix)
+	doneID := fmt.Sprintf("verify-integration-filter-done-%d", suffix)
+	created := time.Now().Add(-time.Second)
+	if err := ds.AddWithID(openID, "filter open", created); err != nil {
+		t.Fatalf("AddWithID open: %v", err)
+	}
+	if err := ds.AddWithID(doneID, "filter done", created.Add(time.Second)); err != nil {
+		t.Fatalf("AddWithID done: %v", err)
+	}
+	if _, _, err := ds.Update(doneID, "filter done", true); err != nil {
+		t.Fatalf("Update done: %v", err)
+	}
+	t.Cleanup(func() { ds.Delete(openID); ds.Delete(doneID) })
+
+	prev := durableStore
+	durableStore = cache.NewListCache(rdb, ds, time.Minute)
+	t.Cleanup(func() { durableStore = prev })
+
+	request := func(target string) []pgstore.Todo {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		w := httptest.NewRecorder()
+		handleTodosDurable(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s: status %d body %q", target, w.Code, w.Body.String())
+		}
+		var todos []pgstore.Todo
+		if err := json.NewDecoder(w.Body).Decode(&todos); err != nil {
+			t.Fatalf("GET %s: decode: %v", target, err)
+		}
+		return todos
+	}
+	contains := func(todos []pgstore.Todo, id string) (int, bool) {
+		for i, todo := range todos {
+			if todo.ID == id {
+				return i, true
+			}
+		}
+		return -1, false
+	}
+
+	complete := request("/todos/durable")
+	if rdb.Exists(ctx, cache.DurableListKey).Val() != 1 {
+		t.Fatal("cold complete read did not populate the durable-list cache key")
+	}
+	open := request("/todos/durable?done=false")
+	done := request("/todos/durable?done=true")
+	_, ok := contains(open, openID)
+	if !ok {
+		t.Fatalf("done=false response omitted %s: %+v", openID, open)
+	}
+	if _, ok := contains(open, doneID); ok {
+		t.Fatalf("done=false response contained completed row: %+v", open)
+	}
+	_, ok = contains(done, doneID)
+	if !ok {
+		t.Fatalf("done=true response omitted %s: %+v", doneID, done)
+	}
+	if _, ok := contains(done, openID); ok {
+		t.Fatalf("done=true response contained open row: %+v", done)
+	}
+	for _, todo := range open {
+		if todo.Done {
+			t.Fatalf("done=false response contained a completed row: %+v", open)
+		}
+	}
+	for _, todo := range done {
+		if !todo.Done {
+			t.Fatalf("done=true response contained an open row: %+v", done)
+		}
+	}
+	completeOpenAt, _ := contains(complete, openID)
+	completeDoneAt, _ := contains(complete, doneID)
+	if completeOpenAt >= completeDoneAt {
+		t.Fatalf("durable order is unexpected: open=%d done=%d", completeOpenAt, completeDoneAt)
+	}
+
+	warmComplete := request("/todos/durable")
+	if _, ok := contains(warmComplete, openID); !ok {
+		t.Fatalf("warm complete response omitted %s", openID)
+	}
+	if _, ok := contains(warmComplete, doneID); !ok {
+		t.Fatalf("warm complete response omitted %s", doneID)
+	}
+	if len(warmComplete) != len(complete) {
+		t.Fatalf("filtered reads replaced complete cache: cold=%d warm=%d", len(complete), len(warmComplete))
+	}
+}
+
 func requireEnv(t *testing.T, key string) string {
 	t.Helper()
 	v := os.Getenv(key)

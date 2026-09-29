@@ -305,9 +305,29 @@ func handleTodosDurable(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	// An invalid done filter is a 400 whether or not the durable store is
+	// configured, so it is validated before the read.
+	values, hasDone := r.URL.Query()["done"]
+	var done bool
+	if hasDone {
+		if len(values) != 1 || (values[0] != "true" && values[0] != "false") {
+			http.Error(w, "done must be true or false", http.StatusBadRequest)
+			return
+		}
+		done = values[0] == "true"
+	}
 	todos, ok := readDurable(w)
 	if !ok {
 		return
+	}
+	if hasDone {
+		filtered := make([]pgstore.Todo, 0, len(todos))
+		for _, todo := range todos {
+			if todo.Done == done {
+				filtered = append(filtered, todo)
+			}
+		}
+		todos = filtered
 	}
 	jsonNewline(todos, w)
 }
