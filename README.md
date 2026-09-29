@@ -89,4 +89,4 @@ one that has shipped.
 |---|---|
 | `make test` | nothing (unit tests) |
 | `make verify` | Docker; starts and removes the compose stack |
-| `make verify-integration` | Postgres, Kafka and Redis already running (`SF_SERVICE_*` or `PG_ADDR`/`KAFKA_BROKERS`/`REDIS_ADDR`) |
+| `make verify-integration` | Postgres, Kafka and Redis already running (`SF_SERVICE_*` or `PG_ADDR`/`KAFKA_BROKERS`/`REDIS_ADDR`); buildgate's `verify_command` |

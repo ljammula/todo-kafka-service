@@ -1,4 +1,4 @@
-verify_command: "make verify"
+verify_command: "make verify-integration"
 preflight_profile: brownfield
 # lint_command: "golangci-lint run ./..."
 # security_command: "govulncheck ./..."
