@@ -282,6 +282,16 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 func handleTodosDurable(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		values, hasDone := r.URL.Query()["done"]
+		var done bool
+		if hasDone {
+			if len(values) != 1 || (values[0] != "true" && values[0] != "false") {
+				http.Error(w, "done must be true or false", http.StatusBadRequest)
+				return
+			}
+			done = values[0] == "true"
+		}
+
 		if durableStore == nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -290,6 +300,16 @@ func handleTodosDurable(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("list durable todos: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if hasDone {
+			filtered := make([]pgstore.Todo, 0, len(todos))
+			for _, todo := range todos {
+				if todo.Done == done {
+					filtered = append(filtered, todo)
+				}
+			}
+			jsonNewline(filtered, w)
 			return
 		}
 		jsonNewline(todos, w)
