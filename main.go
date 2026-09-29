@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,7 +9,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
+	"todo-service/cache"
 	"todo-service/event"
 	"todo-service/pgstore"
 )
@@ -143,6 +146,43 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		key := r.Header.Get("Idempotency-Key")
+		// Publishing and key state both outlive a client disconnect: a
+		// publish cancelled after the broker already took the event would
+		// release the key and let the retry publish it again, and a
+		// cancelled Complete would leave the claim looking in flight.
+		// publishTimeout keeps the publish inside the key's claim TTL.
+		keyCtx := context.WithoutCancel(r.Context())
+		if len(key) > maxIdempotencyKeyLen {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if key != "" {
+			prior, err := idempotency.Claim(r.Context(), key, body.Title)
+			if err != nil {
+				// Without the lookup there is no way to tell a retry from
+				// a new request, so refuse rather than risk a duplicate.
+				log.Printf("claim idempotency key: %v", err)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			switch {
+			case prior == nil:
+				// Claimed: fall through and create the todo.
+			case prior.Title != body.Title:
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				return
+			case prior.Todo == nil:
+				w.WriteHeader(http.StatusConflict)
+				return
+			default:
+				w.Header().Set("Idempotent-Replayed", "true")
+				w.WriteHeader(http.StatusCreated)
+				jsonNewline(*prior.Todo, w)
+				return
+			}
+		}
+
 		// Publish first, cache second: the in-memory Store below is only
 		// this process's own read cache for an immediate response --
 		// Postgres, materialized by cmd/consumer off this same event, is
@@ -150,12 +190,30 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 		// with nothing behind it, so the store is only updated once the
 		// event is confirmed queued.
 		id := newTodoID()
-		if err := publisher.Publish(r.Context(), event.TodoCreated{ID: id, Title: body.Title}); err != nil {
+		publishCtx, cancel := context.WithTimeout(keyCtx, publishTimeout)
+		err := publisher.Publish(publishCtx, event.TodoCreated{ID: id, Title: body.Title, CreatedAt: time.Now().UTC()})
+		cancel()
+		if err != nil {
 			log.Printf("publish todo.created for %s: %v", id, err)
+			if key != "" {
+				// Nothing was created, so the client's retry must be
+				// allowed to try again under the same key.
+				if err := idempotency.Release(keyCtx, key); err != nil {
+					log.Printf("release idempotency key: %v", err)
+				}
+			}
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
 		t := store.AddWithID(id, body.Title)
+		if key != "" {
+			// The event is already published, so a failure here is logged,
+			// not returned: an error response would invite the very retry
+			// this key exists to absorb.
+			if err := idempotency.Complete(keyCtx, key, idempotencyRecord{Title: body.Title, Todo: &t}); err != nil {
+				log.Printf("complete idempotency key for %s: %v", id, err)
+			}
+		}
 		w.WriteHeader(http.StatusCreated)
 		jsonNewline(t, w)
 		return
@@ -246,7 +304,28 @@ func jsonNewline(v any, w http.ResponseWriter) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// publishTimeout caps one todo.created publish. It must stay well under
+// idempotencyClaimTTL: a publish still running when its claim expires
+// lets a retry claim the key and publish a second todo.
+const publishTimeout = 10 * time.Second
+
+// durableListCacheTTL bounds how stale GET /todos/durable can be -- see
+// cache.ListCache for when it is stale at all.
+const durableListCacheTTL = 30 * time.Second
+
 func main() {
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		log.Fatal("REDIS_ADDR is required (e.g. localhost:6380)")
+	}
+	rdb, err := cache.Connect(redisAddr)
+	if err != nil {
+		log.Fatalf("connect to redis: %v", err)
+	}
+	defer rdb.Close()
+	idempotency = redisIdempotencyStore{rdb: rdb}
+	log.Printf("redis connected at %s", redisAddr)
+
 	// publisher stays the noopPublisher default (see publisher.go) unless
 	// KAFKA_BROKERS is set -- so running this binary with no Kafka
 	// configured behaves exactly as it did before Kafka was added.
@@ -272,8 +351,8 @@ func main() {
 			log.Printf("connect durable store: %v -- /todos/durable will be unavailable", err)
 		} else {
 			defer ds.Close()
-			durableStore = ds
-			log.Printf("durable store connected")
+			durableStore = cache.NewListCache(rdb, ds, durableListCacheTTL)
+			log.Printf("durable store connected, cached in redis for %s", durableListCacheTTL)
 		}
 	}
 

@@ -9,6 +9,7 @@ package pgstore
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -18,19 +19,20 @@ import (
 // and the HTTP response shape are different concerns that happen to look
 // alike today.
 type Todo struct {
-	ID    string
-	Title string
-	Done  bool
+	ID        string
+	Title     string
+	Done      bool
+	CreatedAt time.Time
 }
 
-// Store is a connection pool against one Postgres database, with the
-// todos table it needs already ensured to exist.
+// Store is a connection pool against one Postgres database whose schema
+// Migrate has already brought up to date.
 type Store struct {
 	db *sql.DB
 }
 
-// New opens a connection pool against dsn and ensures the todos table
-// exists. dsn is a standard postgres:// connection string, e.g.
+// New opens a connection pool against dsn and applies any pending
+// migrations (see Migrate). dsn is a standard postgres:// connection string, e.g.
 // "postgres://todo:todo@localhost:5433/todo?sslmode=disable".
 func New(dsn string) (*Store, error) {
 	db, err := sql.Open("postgres", dsn)
@@ -41,23 +43,18 @@ func New(dsn string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
-	const schema = `
-CREATE TABLE IF NOT EXISTS todos (
-	id    TEXT PRIMARY KEY,
-	title TEXT NOT NULL,
-	done  BOOLEAN NOT NULL DEFAULT false
-)`
-	if _, err := db.Exec(schema); err != nil {
+	if err := Migrate(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("create todos table: %w", err)
+		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return &Store{db: db}, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// List returns every todo, oldest first.
 func (s *Store) List() ([]Todo, error) {
-	rows, err := s.db.Query(`SELECT id, title, done FROM todos ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, title, done, created_at FROM todos ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +63,7 @@ func (s *Store) List() ([]Todo, error) {
 	out := []Todo{}
 	for rows.Next() {
 		var t Todo
-		if err := rows.Scan(&t.ID, &t.Title, &t.Done); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Done, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -80,11 +77,13 @@ func (s *Store) List() ([]Todo, error) {
 // one, so the id a client saw in the POST response is the same id that
 // eventually lands durably. ON CONFLICT DO NOTHING makes this idempotent
 // against Kafka's own at-least-once redelivery -- cmd/consumer relies on
-// that to safely retry a message it isn't sure committed.
-func (s *Store) AddWithID(id, title string) error {
+// that to safely retry a message it isn't sure committed. A zero createdAt
+// means "unknown" and records the insert time instead.
+func (s *Store) AddWithID(id, title string, createdAt time.Time) error {
+	at := sql.NullTime{Time: createdAt, Valid: !createdAt.IsZero()}
 	_, err := s.db.Exec(
-		`INSERT INTO todos (id, title, done) VALUES ($1, $2, false) ON CONFLICT (id) DO NOTHING`,
-		id, title,
+		`INSERT INTO todos (id, title, done, created_at) VALUES ($1, $2, false, COALESCE($3, now())) ON CONFLICT (id) DO NOTHING`,
+		id, title, at,
 	)
 	return err
 }
@@ -92,7 +91,7 @@ func (s *Store) AddWithID(id, title string) error {
 func (s *Store) Get(id string) (Todo, bool, error) {
 	var t Todo
 	t.ID = id
-	err := s.db.QueryRow(`SELECT title, done FROM todos WHERE id = $1`, id).Scan(&t.Title, &t.Done)
+	err := s.db.QueryRow(`SELECT title, done, created_at FROM todos WHERE id = $1`, id).Scan(&t.Title, &t.Done, &t.CreatedAt)
 	if err == sql.ErrNoRows {
 		return Todo{}, false, nil
 	}
@@ -103,18 +102,18 @@ func (s *Store) Get(id string) (Todo, bool, error) {
 }
 
 func (s *Store) Update(id, title string, done bool) (Todo, bool, error) {
-	res, err := s.db.Exec(`UPDATE todos SET title = $1, done = $2 WHERE id = $3`, title, done, id)
-	if err != nil {
-		return Todo{}, false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return Todo{}, false, err
-	}
-	if n == 0 {
+	t := Todo{ID: id, Title: title, Done: done}
+	err := s.db.QueryRow(
+		`UPDATE todos SET title = $1, done = $2 WHERE id = $3 RETURNING created_at`,
+		title, done, id,
+	).Scan(&t.CreatedAt)
+	if err == sql.ErrNoRows {
 		return Todo{}, false, nil
 	}
-	return Todo{ID: id, Title: title, Done: done}, true, nil
+	if err != nil {
+		return Todo{}, false, err
+	}
+	return t, true, nil
 }
 
 func (s *Store) Delete(id string) (bool, error) {
