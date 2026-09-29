@@ -162,6 +162,87 @@ func TestKafkaPublisherRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDurableStatsHTTPThroughListCache verifies the stats endpoint uses the
+// production route and the same Redis-backed list cache as /todos/durable,
+// rather than a separate aggregate query or cache.
+func TestDurableStatsHTTPThroughListCache(t *testing.T) {
+	rdb := connectRedis(t)
+	ctx := context.Background()
+	ds, err := pgstore.New(requireEnv(t, "TODO_DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("connect to postgres: %v", err)
+	}
+	t.Cleanup(func() { ds.Close() })
+	if err := cache.InvalidateDurableList(ctx, rdb); err != nil {
+		t.Fatalf("clear cache: %v", err)
+	}
+	t.Cleanup(func() { cache.InvalidateDurableList(ctx, rdb) })
+
+	base, err := ds.List()
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	ids := []string{
+		fmt.Sprintf("verify-integration-stats-a-%d", time.Now().UnixNano()),
+		fmt.Sprintf("verify-integration-stats-b-%d", time.Now().UnixNano()),
+		fmt.Sprintf("verify-integration-stats-c-%d", time.Now().UnixNano()),
+	}
+	for i, id := range ids {
+		if err := ds.AddWithID(id, fmt.Sprintf("stats %d", i), time.Time{}); err != nil {
+			t.Fatalf("AddWithID: %v", err)
+		}
+		t.Cleanup(func() { ds.Delete(id) })
+	}
+	if _, _, err := ds.Update(ids[0], "stats 0", true); err != nil {
+		t.Fatalf("mark first done: %v", err)
+	}
+	if _, _, err := ds.Update(ids[2], "stats 2", true); err != nil {
+		t.Fatalf("mark third done: %v", err)
+	}
+
+	lister := cache.NewListCache(rdb, ds, time.Minute)
+	old := durableStore
+	durableStore = lister
+	t.Cleanup(func() { durableStore = old })
+	mux := http.NewServeMux()
+	registerRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/todos/durable/stats", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("stats GET expected 200, got %d", w.Code)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.NewDecoder(w.Body).Decode(&fields); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if len(fields) != 2 {
+		t.Fatalf("expected exactly total and done fields, got %v", fields)
+	}
+	var total, done int
+	if err := json.Unmarshal(fields["total"], &total); err != nil {
+		t.Fatalf("decode total: %v", err)
+	}
+	if err := json.Unmarshal(fields["done"], &done); err != nil {
+		t.Fatalf("decode done: %v", err)
+	}
+	baseDone := 0
+	for _, todo := range base {
+		if todo.Done {
+			baseDone++
+		}
+	}
+	if total != len(base)+len(ids) || done != baseDone+2 {
+		t.Fatalf("stats = total %d done %d, want total %d done %d", total, done, len(base)+len(ids), baseDone+2)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/todos/durable/stats", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("stats POST expected 405, got %d", w.Code)
+	}
+}
+
 // TestDurableEndpointFiltering exercises the endpoint's filtering over the
 // real Postgres-backed read-through cache. The filtered requests deliberately
 // follow the cold complete read so they must use the same cached complete list.

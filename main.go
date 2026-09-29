@@ -279,44 +279,84 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleTodosDurable(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		values, hasDone := r.URL.Query()["done"]
-		var done bool
-		if hasDone {
-			if len(values) != 1 || (values[0] != "true" && values[0] != "false") {
-				http.Error(w, "done must be true or false", http.StatusBadRequest)
-				return
-			}
-			done = values[0] == "true"
-		}
+type durableStats struct {
+	Total int `json:"total"`
+	Done  int `json:"done"`
+}
 
-		if durableStore == nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		todos, err := durableStore.List()
-		if err != nil {
-			log.Printf("list durable todos: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		if hasDone {
-			filtered := make([]pgstore.Todo, 0, len(todos))
-			for _, todo := range todos {
-				if todo.Done == done {
-					filtered = append(filtered, todo)
-				}
-			}
-			jsonNewline(filtered, w)
-			return
-		}
-		jsonNewline(todos, w)
-		return
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
+// readDurable centralizes the durable list read and its error responses. Both
+// durable endpoints therefore use exactly the same cache/Postgres path.
+func readDurable(w http.ResponseWriter) ([]pgstore.Todo, bool) {
+	if durableStore == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return nil, false
 	}
+	todos, err := durableStore.List()
+	if err != nil {
+		log.Printf("list durable todos: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return nil, false
+	}
+	return todos, true
+}
+
+func handleTodosDurable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	// An invalid done filter is a 400 whether or not the durable store is
+	// configured, so it is validated before the read.
+	values, hasDone := r.URL.Query()["done"]
+	var done bool
+	if hasDone {
+		if len(values) != 1 || (values[0] != "true" && values[0] != "false") {
+			http.Error(w, "done must be true or false", http.StatusBadRequest)
+			return
+		}
+		done = values[0] == "true"
+	}
+	todos, ok := readDurable(w)
+	if !ok {
+		return
+	}
+	if hasDone {
+		filtered := make([]pgstore.Todo, 0, len(todos))
+		for _, todo := range todos {
+			if todo.Done == done {
+				filtered = append(filtered, todo)
+			}
+		}
+		todos = filtered
+	}
+	jsonNewline(todos, w)
+}
+
+func handleTodosDurableStats(w http.ResponseWriter, r *http.Request) {
+	// Reject the method before looking at durableStore: even an unavailable
+	// store must not turn a non-GET into a durable read.
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	todos, ok := readDurable(w)
+	if !ok {
+		return
+	}
+	stats := durableStats{Total: len(todos)}
+	for _, todo := range todos {
+		if todo.Done {
+			stats.Done++
+		}
+	}
+	jsonNewline(stats, w)
+}
+
+func registerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/todos", handleTodos)
+	mux.HandleFunc("/todos/", handleTodos)
+	mux.HandleFunc("/todos/durable", handleTodosDurable)
+	mux.HandleFunc("/todos/durable/stats", handleTodosDurableStats)
 }
 
 func jsonNewline(v any, w http.ResponseWriter) {
@@ -376,9 +416,7 @@ func main() {
 		}
 	}
 
-	http.HandleFunc("/todos", handleTodos)
-	http.HandleFunc("/todos/", handleTodos)
-	http.HandleFunc("/todos/durable", handleTodosDurable)
+	registerRoutes(http.DefaultServeMux)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

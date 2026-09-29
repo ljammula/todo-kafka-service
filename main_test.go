@@ -320,6 +320,100 @@ func TestTodosDurableMethodNotAllowed(t *testing.T) {
 	}
 }
 
+type countingStatsDurable struct {
+	todos []pgstore.Todo
+	calls *int
+}
+
+func (f countingStatsDurable) List() ([]pgstore.Todo, error) {
+	(*f.calls)++
+	return f.todos, nil
+}
+
+func TestTodosDurableStats(t *testing.T) {
+	prev := durableStore
+	defer func() { durableStore = prev }()
+
+	tests := []struct {
+		name  string
+		todos []pgstore.Todo
+		total int
+		done  int
+	}{
+		{"mixed", []pgstore.Todo{{Done: true}, {Done: false}, {Done: true}}, 3, 2},
+		{"empty", []pgstore.Todo{}, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			durableStore = fakeDurable{todos: tt.todos}
+			w := httptest.NewRecorder()
+			handleTodosDurableStats(w, httptest.NewRequest(http.MethodGet, "/todos/durable/stats", nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			var got map[string]int
+			if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 2 || got["total"] != tt.total || got["done"] != tt.done {
+				t.Fatalf("unexpected stats fields: %#v", got)
+			}
+		})
+	}
+}
+
+func TestTodosDurableStatsFailures(t *testing.T) {
+	prev := durableStore
+	defer func() { durableStore = prev }()
+
+	for _, tc := range []struct {
+		name string
+		fake DurableLister
+		want int
+	}{
+		{"unavailable", nil, http.StatusServiceUnavailable},
+		{"backend error", fakeDurable{err: errors.New("boom")}, http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			durableStore = tc.fake
+			w := httptest.NewRecorder()
+			handleTodosDurableStats(w, httptest.NewRequest(http.MethodGet, "/todos/durable/stats", nil))
+			if w.Code != tc.want {
+				t.Fatalf("expected %d, got %d", tc.want, w.Code)
+			}
+		})
+	}
+}
+
+func TestTodosDurableStatsMethodRejectedBeforeRead(t *testing.T) {
+	prev := durableStore
+	defer func() { durableStore = prev }()
+	calls := 0
+	durableStore = countingStatsDurable{calls: &calls}
+	w := httptest.NewRecorder()
+	handleTodosDurableStats(w, httptest.NewRequest(http.MethodPost, "/todos/durable/stats", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+	if calls != 0 {
+		t.Fatalf("non-GET performed %d durable reads", calls)
+	}
+}
+
+func TestDurableRoutes(t *testing.T) {
+	prev := durableStore
+	defer func() { durableStore = prev }()
+	durableStore = fakeDurable{todos: []pgstore.Todo{{ID: "1"}}}
+	mux := http.NewServeMux()
+	registerRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/todos/durable", nil))
+	var todos []pgstore.Todo
+	if w.Code != http.StatusOK || json.NewDecoder(w.Body).Decode(&todos) != nil || len(todos) != 1 {
+		t.Fatalf("durable list route returned %d and %+v", w.Code, todos)
+	}
+}
+
 func TestListAfterAdd(t *testing.T) {
 	resetStore()
 	handler("", "POST", `{"title":"a"}`)
