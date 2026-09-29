@@ -5,6 +5,7 @@ package pgstore
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // These tests require the docker-compose Postgres service to be up
@@ -32,7 +33,7 @@ func openTestStore(t *testing.T) *Store {
 func TestAddWithIDAndGet(t *testing.T) {
 	s := openTestStore(t)
 
-	if err := s.AddWithID("t1", "buy milk"); err != nil {
+	if err := s.AddWithID("t1", "buy milk", time.Time{}); err != nil {
 		t.Fatalf("AddWithID: %v", err)
 	}
 
@@ -43,17 +44,20 @@ func TestAddWithIDAndGet(t *testing.T) {
 	if !ok || got.Title != "buy milk" {
 		t.Fatalf("unexpected get result: ok=%v got=%+v", ok, got)
 	}
+	if got.CreatedAt.IsZero() {
+		t.Fatal("expected created_at to be set by the database")
+	}
 }
 
 func TestAddWithIDIsIdempotent(t *testing.T) {
 	s := openTestStore(t)
 
-	if err := s.AddWithID("t1", "first title"); err != nil {
+	if err := s.AddWithID("t1", "first title", time.Time{}); err != nil {
 		t.Fatalf("AddWithID (first): %v", err)
 	}
 	// Simulates Kafka redelivering the same message -- must not error and
 	// must not overwrite the existing row.
-	if err := s.AddWithID("t1", "second title"); err != nil {
+	if err := s.AddWithID("t1", "second title", time.Time{}); err != nil {
 		t.Fatalf("AddWithID (redelivery): %v", err)
 	}
 
@@ -69,7 +73,7 @@ func TestAddWithIDIsIdempotent(t *testing.T) {
 func TestUpdateAndDelete(t *testing.T) {
 	s := openTestStore(t)
 
-	if err := s.AddWithID("t1", "old title"); err != nil {
+	if err := s.AddWithID("t1", "old title", time.Time{}); err != nil {
 		t.Fatalf("AddWithID: %v", err)
 	}
 
@@ -98,13 +102,40 @@ func TestUpdateAndDelete(t *testing.T) {
 	}
 }
 
+// TestAddWithIDKeepsGivenCreatedAt: the event's own timestamp, not the
+// insert time, orders the list -- so "b", created first but inserted
+// second (a consumer backlog), still lists first.
+func TestAddWithIDKeepsGivenCreatedAt(t *testing.T) {
+	s := openTestStore(t)
+	earlier := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	if err := s.AddWithID("a", "a", time.Time{}); err != nil {
+		t.Fatalf("AddWithID a: %v", err)
+	}
+	if err := s.AddWithID("b", "b", earlier); err != nil {
+		t.Fatalf("AddWithID b: %v", err)
+	}
+
+	got, ok, err := s.Get("b")
+	if err != nil || !ok || !got.CreatedAt.Equal(earlier) {
+		t.Fatalf("Get b: ok=%v err=%v created_at=%v, want %v", ok, err, got.CreatedAt, earlier)
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 2 || list[0].ID != "b" || list[1].ID != "a" {
+		t.Fatalf("expected b (created earlier) before a, got %+v", list)
+	}
+}
+
 func TestListOrdering(t *testing.T) {
 	s := openTestStore(t)
 
-	if err := s.AddWithID("a", "a"); err != nil {
+	if err := s.AddWithID("a", "a", time.Time{}); err != nil {
 		t.Fatalf("AddWithID a: %v", err)
 	}
-	if err := s.AddWithID("b", "b"); err != nil {
+	if err := s.AddWithID("b", "b", time.Time{}); err != nil {
 		t.Fatalf("AddWithID b: %v", err)
 	}
 

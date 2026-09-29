@@ -44,5 +44,19 @@ services:
       timeout: 5s
       retries: 24
 
+  # Cache and idempotency store for the API: POST /todos Idempotency-Key
+  # records, and the cached GET /todos/durable list that cmd/consumer
+  # invalidates after each write. No volume -- nothing here is the source
+  # of truth, so a restart only costs a cold cache.
+  redis:
+    image: redis:7.4
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
 volumes:
   todo-pgdata:

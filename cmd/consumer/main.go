@@ -1,6 +1,7 @@
 // Command consumer reads TodoCreated events off Kafka and materializes
 // them into Postgres -- the worker half of POST /todos -> Kafka ->
-// Postgres. Run alongside the API and the docker-compose kafka/postgres
+// Postgres -- then invalidates the API's Redis cache of the durable list.
+// Run alongside the API and the docker-compose kafka/postgres/redis
 // services; see the repo's own Makefile "verify" target.
 package main
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/segmentio/kafka-go"
 
+	"todo-service/cache"
 	"todo-service/event"
 	"todo-service/pgstore"
 )
@@ -25,6 +27,16 @@ func main() {
 		log.Fatal("TODO_DATABASE_URL is required (e.g. postgres://todo:todo@localhost:5433/todo?sslmode=disable)")
 	}
 
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		log.Fatal("REDIS_ADDR is required (e.g. localhost:6380)")
+	}
+	rdb, err := cache.Connect(redisAddr)
+	if err != nil {
+		log.Fatalf("connect to redis: %v", err)
+	}
+	defer rdb.Close()
+
 	store, err := pgstore.New(dsn)
 	if err != nil {
 		log.Fatalf("connect to postgres: %v", err)
@@ -36,7 +48,7 @@ func main() {
 		Topic:   topic,
 		GroupID: "todo-consumer",
 		// Without this, a consumer that joins the group before the topic
-		// exists (auto-created on the API's first publish, since nothing
+		// exists (created on the API's first publish, since nothing
 		// here creates it up front) can stabilize its group generation
 		// with zero partitions and never notice the topic appear --
 		// silently consuming nothing forever. Found live: exactly this
@@ -65,13 +77,19 @@ func main() {
 			continue
 		}
 
-		if err := store.AddWithID(evt.ID, evt.Title); err != nil {
+		if err := store.AddWithID(evt.ID, evt.Title, evt.CreatedAt); err != nil {
 			// Leave the offset uncommitted: this message (and everything
 			// after it, for this partition) is redelivered on restart.
 			// Safe because AddWithID is idempotent (ON CONFLICT DO
 			// NOTHING) -- see pgstore.Store.AddWithID's own comment.
 			log.Printf("persist todo %s: %v -- offset not committed, will retry", evt.ID, err)
 			continue
+		}
+
+		// Logged, not retried: the row is already durable, and the
+		// cache's own TTL bounds how long GET /todos/durable can miss it.
+		if err := cache.InvalidateDurableList(ctx, rdb); err != nil {
+			log.Printf("invalidate durable list cache after todo %s: %v", evt.ID, err)
 		}
 
 		if err := reader.CommitMessages(ctx, msg); err != nil {
