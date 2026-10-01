@@ -227,7 +227,7 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 			Title string `json:"title"`
 			Done  bool   `json:"done"`
 		}
-		if json.NewDecoder(r.Body).Decode(&body) != nil {
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Title == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -252,6 +252,10 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if body.Title == nil && body.Done == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if body.Title != nil && *body.Title == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
