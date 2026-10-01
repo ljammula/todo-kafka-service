@@ -63,19 +63,94 @@ func TestAddAndGet(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
-	resetStore()
-	w := handler("", "POST", `{"title":"old"}`)
-	var todo Todo
-	json.NewDecoder(w.Body).Decode(&todo)
-
-	w2 := handler("/"+todo.ID, "PUT", `{"title":"new","done":true}`)
-	if w2.Code != 200 {
-		t.Fatalf("PUT expected 200, got %d", w2.Code)
+	tests := []struct {
+		name       string
+		method     string
+		body       string
+		initial    Todo
+		wantStatus int
+		wantTodo   Todo
+	}{
+		{
+			name:       "PUT omits title",
+			method:     http.MethodPut,
+			body:       `{"done":true}`,
+			initial:    Todo{ID: "put-omitted", Title: "old"},
+			wantStatus: http.StatusBadRequest,
+			wantTodo:   Todo{ID: "put-omitted", Title: "old"},
+		},
+		{
+			name:       "PUT empty title",
+			method:     http.MethodPut,
+			body:       `{"title":"","done":true}`,
+			initial:    Todo{ID: "put-empty", Title: "old"},
+			wantStatus: http.StatusBadRequest,
+			wantTodo:   Todo{ID: "put-empty", Title: "old"},
+		},
+		{
+			name:       "PATCH empty title",
+			method:     http.MethodPatch,
+			body:       `{"title":""}`,
+			initial:    Todo{ID: "patch-empty", Title: "old", Done: true},
+			wantStatus: http.StatusBadRequest,
+			wantTodo:   Todo{ID: "patch-empty", Title: "old", Done: true},
+		},
+		{
+			name:       "valid PUT",
+			method:     http.MethodPut,
+			body:       `{"title":"new title","done":true}`,
+			initial:    Todo{ID: "put-valid", Title: "old"},
+			wantStatus: http.StatusOK,
+			wantTodo:   Todo{ID: "put-valid", Title: "new title", Done: true},
+		},
+		{
+			name:       "valid PATCH preserves omitted fields",
+			method:     http.MethodPatch,
+			body:       `{"title":"new title"}`,
+			initial:    Todo{ID: "patch-valid", Title: "old", Done: true},
+			wantStatus: http.StatusOK,
+			wantTodo:   Todo{ID: "patch-valid", Title: "new title", Done: true},
+		},
+		{
+			name:       "done-only PATCH preserves title",
+			method:     http.MethodPatch,
+			body:       `{"done":true}`,
+			initial:    Todo{ID: "patch-done-only", Title: "old"},
+			wantStatus: http.StatusOK,
+			wantTodo:   Todo{ID: "patch-done-only", Title: "old", Done: true},
+		},
 	}
-	var updated Todo
-	json.NewDecoder(w2.Body).Decode(&updated)
-	if updated.Title != "new" || !updated.Done {
-		t.Fatal("update did not apply")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetStore()
+			store.todos = []Todo{tt.initial}
+
+			w := handler("/"+tt.initial.ID, tt.method, tt.body)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, w.Code)
+			}
+			if tt.wantStatus == http.StatusBadRequest && w.Body.Len() != 0 {
+				t.Fatalf("expected empty response body, got %q", w.Body.String())
+			}
+			if tt.wantStatus == http.StatusOK {
+				var got Todo
+				if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if got != tt.wantTodo {
+					t.Fatalf("response todo = %+v, want %+v", got, tt.wantTodo)
+				}
+			}
+
+			got, ok := store.Get(tt.initial.ID)
+			if !ok {
+				t.Fatal("todo was removed")
+			}
+			if got != tt.wantTodo {
+				t.Fatalf("stored todo = %+v, want %+v", got, tt.wantTodo)
+			}
+		})
 	}
 }
 
