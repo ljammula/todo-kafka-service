@@ -49,9 +49,13 @@ to all five and adds nothing.
    call for.
 4. Upstream calls. For each call to another service, a database, a broker
    or a cache: its timeout, what the caller sees when it fails or times
-   out, and whether a partial result is ever returned. The default is no
-   partial result: the request fails with 502 for an upstream error, 504
-   for an upstream timeout and 503 for a dependency that is not configured.
+   out, and whether a partial result is ever returned. Timeouts (team
+   defaults): 100 ms for a cache call, 500 ms for a database read or an
+   HTTP call to another service made while serving a request, 2 s for a
+   database write, 10 s for a Kafka publish, 5 s for a call a consumer
+   makes outside any request. The default is no partial result: the
+   request fails with 502 for an upstream error, 504 for an upstream
+   timeout and 503 for a dependency that is not configured.
 5. Stored data. Does the change alter the shape of stored data or of an
    event? State how old rows or old events are handled, and that the
    change is safe while the previous version of the service is still
@@ -78,11 +82,9 @@ to all five and adds nothing.
   each other stay sequential. Every goroutine has an owner that waits for
   it and a way to stop it; none outlives its request unless question 1
   chose a pooled goroutine.
-- Timeouts. Every outbound call takes a context with a deadline: 100 ms
-  for a cache call, 500 ms for a database read or an HTTP call to another
-  service, 2 s for a database write, 10 s for a Kafka publish (team
-  defaults). Never use `context.Background()` for a call made while
-  serving a request.
+- Timeouts. Every outbound call takes a context with the deadline the
+  spec states for it. Never use `context.Background()` for a call made
+  while serving a request; derive the context from the request's.
 - Errors. Wrap an error with what was being done at each layer
   (`fmt.Errorf("load todo %s: %w", id, err)`). Map errors to a status code
   in the handler only. Log a failure once, where it is handled.
