@@ -85,9 +85,13 @@ to all five and adds nothing.
 - Timeouts. Every outbound call takes a context with the deadline the
   spec states for it. Never use `context.Background()` for a call made
   while serving a request; derive the context from the request's.
-- Errors. Wrap an error with what was being done at each layer
-  (`fmt.Errorf("load todo %s: %w", id, err)`). Map errors to a status code
-  in the handler only. Log a failure once, where it is handled.
+- Errors. Every function that returns another function's error wraps it
+  with what it was doing, using `%w`: a store or client
+  (`fmt.Errorf("read labels for todo %s: %w", id, err)`), and the service
+  that calls it (`fmt.Errorf("load todo details %s: %w", id, err)`). Never
+  return a callee's error bare. Sentinel errors the handler matches with
+  `errors.Is` stay matchable through the wrapping. Map errors to a status
+  code in the handler only. Log a failure once, where it is handled.
 - Kafka. A consumer is idempotent: handling a record twice has the same
   effect as once. It commits the offset only after its durable write
   succeeds. A producer sets the event's identity and timestamp itself, so
@@ -96,8 +100,10 @@ to all five and adds nothing.
   shipped migration is never edited. Code that reads a new column ships
   in the same ticket as, or a later ticket than, the migration that adds
   it.
-- Tests. Table-driven tests for each changed behaviour, covering the
-  success path, each error path in question 4 and the boundary cases.
+- Tests. One table-driven test per changed behaviour: a slice of named
+  cases run with `t.Run`, covering the success path, each error path in
+  question 4 and the boundary cases. Do not write one test function per
+  case.
   Code that touches a real store, broker or cache also gets a test under
   the repository's integration tag. A ticket that adds a goroutine, an
   `errgroup`, a cache or shared mutable state must name `go test -race`
