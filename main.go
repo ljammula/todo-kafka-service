@@ -108,6 +108,8 @@ func (s *Store) Delete(id string) bool {
 
 var store = NewStore()
 
+// titleIsWhitespaceOnly rejects titles with no non-whitespace characters
+// without altering titles that contain visible characters.
 func titleIsWhitespaceOnly(title string) bool {
 	return strings.TrimSpace(title) == ""
 }

@@ -179,8 +179,14 @@ func TestWhitespaceOnlyPostRejectedBeforePublishOrStore(t *testing.T) {
 			resetStore()
 			recorder := &recordingPublisher{}
 			publisher = recorder
-			w := handler("", http.MethodPost, `{"title":"`+title+`"}`)
-			if w.Code != http.StatusBadRequest || w.Body.Len() != empty.Body.Len() {
+			requestBody, err := json.Marshal(struct {
+				Title string `json:"title"`
+			}{Title: title})
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			w := handler("", http.MethodPost, string(requestBody))
+			if w.Code != http.StatusBadRequest || w.Body.String() != empty.Body.String() {
 				t.Fatalf("got status %d and body %q, want 400 and empty body", w.Code, w.Body.String())
 			}
 			if len(store.List()) != 0 {
