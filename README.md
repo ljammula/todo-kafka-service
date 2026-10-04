@@ -94,3 +94,11 @@ one that has shipped.
 Every target runs `TestFunctionComplexity` (`complexity_test.go`): a function may have at most 25
 decision points. `handleTodos` was over the limit when the check was added and is listed there as a
 known exception; it may shrink, not grow.
+
+## Design guide
+
+`docs/design-guide/go-service.md` is the team's design guide: the decisions a spec must state and the
+rules a plan must follow. `.factory.yml` names it (`design_guide: go-service`), so buildgate's spec
+drafting and planning read it for every request against this repository. The operator's buildgate
+session config must list the folder: `design_guide_dirs: [~/code/todo-kafka-service/docs/design-guide]`.
+Service-specific facts the guide relies on are in `ARCHITECTURE.md`.

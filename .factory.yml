@@ -1,5 +1,6 @@
 verify_command: "make verify-integration"
 preflight_profile: brownfield
+design_guide: go-service   # the team guide in docs/design-guide/; the operator's session config lists that folder in design_guide_dirs
 # lint_command: "golangci-lint run ./..."
 # security_command: "govulncheck ./..."
 # unit_test_command: "go test ./..."
