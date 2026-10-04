@@ -90,3 +90,7 @@ one that has shipped.
 | `make test` | nothing (unit tests) |
 | `make verify` | Docker; starts and removes the compose stack |
 | `make verify-integration` | Postgres, Kafka and Redis already running (`SF_SERVICE_*` or `PG_ADDR`/`KAFKA_BROKERS`/`REDIS_ADDR`); buildgate's `verify_command` |
+
+Every target runs `TestFunctionComplexity` (`complexity_test.go`): a function may have at most 25
+decision points. `handleTodos` was over the limit when the check was added and is listed there as a
+known exception; it may shrink, not grow.
