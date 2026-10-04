@@ -108,6 +108,10 @@ func (s *Store) Delete(id string) bool {
 
 var store = NewStore()
 
+func titleIsWhitespaceOnly(title string) bool {
+	return strings.TrimSpace(title) == ""
+}
+
 // DurableLister is the seam between handleTodosDurable and the real
 // pgstore.Store, so main_test.go's unit tests never need a live Postgres
 // -- the same injectable-dependency shape publisher uses in
@@ -142,7 +146,7 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var body struct{ Title string }
-		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Title == "" {
+		if json.NewDecoder(r.Body).Decode(&body) != nil || titleIsWhitespaceOnly(body.Title) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -227,7 +231,7 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 			Title string `json:"title"`
 			Done  bool   `json:"done"`
 		}
-		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Title == "" {
+		if json.NewDecoder(r.Body).Decode(&body) != nil || titleIsWhitespaceOnly(body.Title) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -255,7 +259,7 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if body.Title != nil && *body.Title == "" {
+		if body.Title != nil && titleIsWhitespaceOnly(*body.Title) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}

@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"todo-service/event"
 	"todo-service/pgstore"
 )
 
@@ -21,6 +24,15 @@ func handler(path string, method string, body string) *httptest.ResponseRecorder
 
 func resetStore() {
 	store = NewStore()
+}
+
+type recordingPublisher struct {
+	events []event.TodoCreated
+}
+
+func (p *recordingPublisher) Publish(_ context.Context, evt event.TodoCreated) error {
+	p.events = append(p.events, evt)
+	return nil
 }
 
 func TestListEmpty(t *testing.T) {
@@ -151,6 +163,112 @@ func TestUpdate(t *testing.T) {
 				t.Fatalf("stored todo = %+v, want %+v", got, tt.wantTodo)
 			}
 		})
+	}
+}
+
+func TestWhitespaceOnlyPostRejectedBeforePublishOrStore(t *testing.T) {
+	previousPublisher := publisher
+	defer func() { publisher = previousPublisher }()
+
+	empty := handler("", http.MethodPost, `{"title":""}`)
+	if empty.Code != http.StatusBadRequest || empty.Body.Len() != 0 {
+		t.Fatalf("empty title: got status %d and body %q", empty.Code, empty.Body.String())
+	}
+	for _, title := range []string{"   ", "\t"} {
+		t.Run(fmt.Sprintf("%q", title), func(t *testing.T) {
+			resetStore()
+			recorder := &recordingPublisher{}
+			publisher = recorder
+			w := handler("", http.MethodPost, `{"title":"`+title+`"}`)
+			if w.Code != http.StatusBadRequest || w.Body.Len() != empty.Body.Len() {
+				t.Fatalf("got status %d and body %q, want 400 and empty body", w.Code, w.Body.String())
+			}
+			if len(store.List()) != 0 {
+				t.Fatal("whitespace-only POST created a todo")
+			}
+			if len(recorder.events) != 0 {
+				t.Fatalf("publisher called %d times", len(recorder.events))
+			}
+		})
+	}
+}
+
+func TestPostPreservesSurroundingWhitespace(t *testing.T) {
+	previousPublisher := publisher
+	defer func() { publisher = previousPublisher }()
+	resetStore()
+	recorder := &recordingPublisher{}
+	publisher = recorder
+	const title = "  visible\t"
+	w := handler("", http.MethodPost, `{"title":"  visible\t"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
+	var got Todo
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != title || store.List()[0].Title != title {
+		t.Fatalf("title was not preserved: response %q, store %q", got.Title, store.List()[0].Title)
+	}
+	if len(recorder.events) != 1 || recorder.events[0].Title != title {
+		t.Fatalf("published events = %+v, want title %q", recorder.events, title)
+	}
+}
+
+func TestWhitespaceOnlyPutAndPatchDoNotMutate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		method  string
+		body    string
+		initial Todo
+	}{
+		{"PUT spaces", http.MethodPut, `{"title":"   ","done":false}`, Todo{ID: "put-spaces", Title: "before", Done: true}},
+		{"PUT tab", http.MethodPut, `{"title":"\t","done":false}`, Todo{ID: "put-tab", Title: "before", Done: true}},
+		{"PATCH spaces", http.MethodPatch, `{"title":"   ","done":false}`, Todo{ID: "patch-spaces", Title: "before", Done: true}},
+		{"PATCH tab", http.MethodPatch, `{"title":"\t","done":false}`, Todo{ID: "patch-tab", Title: "before", Done: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetStore()
+			store.todos = []Todo{tc.initial}
+			w := handler("/"+tc.initial.ID, tc.method, tc.body)
+			if w.Code != http.StatusBadRequest || w.Body.Len() != 0 {
+				t.Fatalf("got status %d and body %q, want 400 and empty body", w.Code, w.Body.String())
+			}
+			got, _ := store.Get(tc.initial.ID)
+			if got != tc.initial {
+				t.Fatalf("stored todo = %+v, want unchanged %+v", got, tc.initial)
+			}
+		})
+	}
+}
+
+func TestPutAndPatchPreserveSurroundingWhitespace(t *testing.T) {
+	resetStore()
+	store.todos = []Todo{{ID: "put-visible", Title: "old"}, {ID: "patch-visible", Title: "old", Done: true}}
+
+	put := handler("/put-visible", http.MethodPut, `{"title":"  put visible  ","done":true}`)
+	if put.Code != http.StatusOK {
+		t.Fatalf("PUT expected 200, got %d", put.Code)
+	}
+	var putTodo Todo
+	if err := json.NewDecoder(put.Body).Decode(&putTodo); err != nil {
+		t.Fatal(err)
+	}
+	if putTodo.Title != "  put visible  " || store.todos[0].Title != "  put visible  " {
+		t.Fatalf("PUT title was trimmed: response %q, store %q", putTodo.Title, store.todos[0].Title)
+	}
+
+	patch := handler("/patch-visible", http.MethodPatch, `{"title":"\tpatch visible  ","done":false}`)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("PATCH expected 200, got %d", patch.Code)
+	}
+	var patchTodo Todo
+	if err := json.NewDecoder(patch.Body).Decode(&patchTodo); err != nil {
+		t.Fatal(err)
+	}
+	if patchTodo.Title != "\tpatch visible  " || store.todos[1].Title != "\tpatch visible  " || store.todos[1].Done {
+		t.Fatalf("PATCH changed title or done unexpectedly: response %+v, store %+v", patchTodo, store.todos[1])
 	}
 }
 
