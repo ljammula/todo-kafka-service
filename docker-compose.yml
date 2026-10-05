@@ -24,7 +24,7 @@ services:
     hostname: kafka
     ports:
       - "9094:9092"
-    x-sf-service-port: 19092
+    x-bg-service-port: 19092
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
