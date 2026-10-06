@@ -6,11 +6,21 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"todo-service/pgstore"
 )
+
+func init() {
+	// The sandbox's Kafka sidecar is published on localhost:9094 as well as
+	// its private address. Use the published listener in tests so Kafka's
+	// advertised localhost listener remains reachable after metadata lookup.
+	if os.Getenv("BG_SERVICE_KAFKA") != "" {
+		os.Setenv("KAFKA_BROKERS", "localhost:9094")
+	}
+}
 
 func handler(path string, method string, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, "/todos"+path, bytes.NewBufferString(body))
@@ -21,6 +31,51 @@ func handler(path string, method string, body string) *httptest.ResponseRecorder
 
 func resetStore() {
 	store = NewStore()
+}
+
+func TestHealthzRoute(t *testing.T) {
+	// The root route must remain usable without any external stores or clients.
+	prevDurable := durableStore
+	durableStore = nil
+	defer func() { durableStore = prevDurable }()
+
+	mux := http.NewServeMux()
+	registerRoutes(mux)
+	for _, method := range []string{
+		http.MethodGet,
+		http.MethodHead,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodDelete,
+		http.MethodOptions,
+	} {
+		t.Run(method, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(method, "/healthz", nil))
+
+			if method != http.MethodGet {
+				if w.Code != http.StatusMethodNotAllowed {
+					t.Fatalf("expected 405, got %d", w.Code)
+				}
+				return
+			}
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			if got := w.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type = %q, want application/json", got)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if len(body) != 1 || body["status"] != "ok" {
+				t.Fatalf("response = %#v, want exactly status=ok", body)
+			}
+		})
+	}
 }
 
 func TestListEmpty(t *testing.T) {

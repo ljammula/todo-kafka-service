@@ -304,6 +304,14 @@ func readDurable(w http.ResponseWriter) ([]pgstore.Todo, bool) {
 	return todos, true
 }
 
+func handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	jsonNewline(map[string]string{"status": "ok"}, w)
+}
+
 func handleTodosDurable(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -357,6 +365,7 @@ func handleTodosDurableStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func registerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/healthz", handleHealthz)
 	mux.HandleFunc("/todos", handleTodos)
 	mux.HandleFunc("/todos/", handleTodos)
 	mux.HandleFunc("/todos/durable", handleTodosDurable)
