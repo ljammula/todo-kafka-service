@@ -356,7 +356,19 @@ func handleTodosDurableStats(w http.ResponseWriter, r *http.Request) {
 	jsonNewline(stats, w)
 }
 
+func handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	jsonNewline(struct {
+		Status string `json:"status"`
+	}{Status: "ok"}, w)
+}
+
 func registerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/healthz", handleHealthz)
 	mux.HandleFunc("/todos", handleTodos)
 	mux.HandleFunc("/todos/", handleTodos)
 	mux.HandleFunc("/todos/durable", handleTodosDurable)
