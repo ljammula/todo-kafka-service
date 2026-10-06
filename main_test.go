@@ -46,6 +46,9 @@ func TestHealthz(t *testing.T) {
 				t.Fatalf("expected status %d, got %d", tt.status, w.Code)
 			}
 			if tt.method != http.MethodGet {
+				if got := w.Header().Get("Allow"); got != http.MethodGet {
+					t.Fatalf("expected Allow: GET, got %q", got)
+				}
 				return
 			}
 			if got := w.Header().Get("Content-Type"); got != "application/json" {

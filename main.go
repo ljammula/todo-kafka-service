@@ -358,6 +358,7 @@ func handleTodosDurableStats(w http.ResponseWriter, r *http.Request) {
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
