@@ -82,6 +82,65 @@ func TestHealthzRoute(t *testing.T) {
 	}
 }
 
+func TestVersion(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		status int
+	}{
+		{name: "GET", method: http.MethodGet, status: http.StatusOK},
+		{name: "HEAD", method: http.MethodHead, status: http.StatusMethodNotAllowed},
+		{name: "POST", method: http.MethodPost, status: http.StatusMethodNotAllowed},
+		{name: "PUT", method: http.MethodPut, status: http.StatusMethodNotAllowed},
+		{name: "PATCH", method: http.MethodPatch, status: http.StatusMethodNotAllowed},
+		{name: "DELETE", method: http.MethodDelete, status: http.StatusMethodNotAllowed},
+		{name: "OPTIONS", method: http.MethodOptions, status: http.StatusMethodNotAllowed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			handleVersion(w, httptest.NewRequest(tt.method, "/version", nil))
+			if w.Code != tt.status {
+				t.Fatalf("expected status %d, got %d", tt.status, w.Code)
+			}
+			if tt.method != http.MethodGet {
+				if got := w.Header().Get("Allow"); got != http.MethodGet {
+					t.Fatalf("expected Allow: GET, got %q", got)
+				}
+				return
+			}
+			if got := w.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("expected application/json, got %q", got)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if len(body) != 1 || body["service"] != "todo-kafka-service" {
+				t.Fatalf("unexpected response: %#v", body)
+			}
+		})
+	}
+}
+
+func TestVersionRoute(t *testing.T) {
+	mux := http.NewServeMux()
+	registerRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body) != 1 || body["service"] != "todo-kafka-service" {
+		t.Fatalf("unexpected response: %#v", body)
+	}
+}
+
 func TestListEmpty(t *testing.T) {
 	resetStore()
 	w := handler("", "GET", "")
