@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -127,6 +128,28 @@ type DurableLister interface {
 // in a real pgstore.Store only when TODO_DATABASE_URL is set.
 var durableStore DurableLister
 
+func handleTodoCollection(w http.ResponseWriter, r *http.Request) {
+	values, present := r.URL.Query()["limit"]
+	if present {
+		if len(values) != 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		limit, err := strconv.Atoi(values[0])
+		if err != nil || limit <= 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		todos := store.List()
+		if limit < len(todos) {
+			todos = todos[:limit]
+		}
+		jsonNewline(todos, w)
+		return
+	}
+	jsonNewline(store.List(), w)
+}
+
 func handleTodos(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/todos")
 	if path != "" {
@@ -136,7 +159,7 @@ func handleTodos(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if path == "" || path == "/" {
-			jsonNewline(store.List(), w)
+			handleTodoCollection(w, r)
 			return
 		}
 		if t, ok := store.Get(path); ok {

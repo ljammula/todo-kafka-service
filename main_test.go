@@ -107,6 +107,85 @@ func TestListEmpty(t *testing.T) {
 	}
 }
 
+func TestListLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantIDs    []string
+	}{
+		{name: "unbounded", wantStatus: http.StatusOK, wantIDs: []string{"one", "two", "three"}},
+		{name: "one", query: "?limit=1", wantStatus: http.StatusOK, wantIDs: []string{"one"}},
+		{name: "below length", query: "?limit=2", wantStatus: http.StatusOK, wantIDs: []string{"one", "two"}},
+		{name: "equal length", query: "?limit=3", wantStatus: http.StatusOK, wantIDs: []string{"one", "two", "three"}},
+		{name: "above length", query: "?limit=9", wantStatus: http.StatusOK, wantIDs: []string{"one", "two", "three"}},
+		{name: "empty store", query: "?limit=1", wantStatus: http.StatusOK, wantIDs: []string{}},
+		{name: "empty", query: "?limit=", wantStatus: http.StatusBadRequest},
+		{name: "alphabetic", query: "?limit=abc", wantStatus: http.StatusBadRequest},
+		{name: "decimal", query: "?limit=1.5", wantStatus: http.StatusBadRequest},
+		{name: "zero", query: "?limit=0", wantStatus: http.StatusBadRequest},
+		{name: "negative", query: "?limit=-1", wantStatus: http.StatusBadRequest},
+		{name: "overflow", query: "?limit=999999999999999999999999999", wantStatus: http.StatusBadRequest},
+		{name: "repeated", query: "?limit=1&limit=2", wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetStore()
+			if tt.name != "empty store" {
+				store.todos = []Todo{{ID: "one"}, {ID: "two"}, {ID: "three"}}
+			}
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/todos"+tt.query, nil)
+			handleTodos(w, r)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, w.Code)
+			}
+			if tt.wantStatus == http.StatusBadRequest {
+				if w.Body.Len() != 0 {
+					t.Fatalf("expected empty response body, got %q", w.Body.String())
+				}
+				return
+			}
+			var got []Todo
+			if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if len(got) != len(tt.wantIDs) {
+				t.Fatalf("got %d todos, want %d", len(got), len(tt.wantIDs))
+			}
+			for i, id := range tt.wantIDs {
+				if got[i].ID != id {
+					t.Fatalf("todo %d has ID %q, want %q", i, got[i].ID, id)
+				}
+			}
+		})
+	}
+}
+
+func TestListLimitDoesNotAffectItemLookup(t *testing.T) {
+	tests := []string{"0", "not-a-number"}
+	for _, limit := range tests {
+		t.Run(limit, func(t *testing.T) {
+			resetStore()
+			store.todos = []Todo{{ID: "wanted", Title: "keep me"}}
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/todos/wanted?limit="+limit, nil)
+			handleTodos(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			var got Todo
+			if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if got.ID != "wanted" {
+				t.Fatalf("got todo %+v, want wanted", got)
+			}
+		})
+	}
+}
+
 func TestAddAndGet(t *testing.T) {
 	resetStore()
 	w := handler("", "POST", `{"title":"buy milk"}`)
