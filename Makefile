@@ -1,4 +1,4 @@
-.PHONY: test verify verify-integration
+.PHONY: test verify verify-integration db-migrate up down
 
 # Fast unit tests only -- the in-memory Store with the noop publisher, no
 # Docker required.
@@ -13,8 +13,9 @@ test:
 # itself -- see docker-compose.yml.
 verify: test
 	docker compose up -d --wait postgres kafka redis
-	PG_ADDR=localhost:5433 KAFKA_BROKERS=localhost:9094 REDIS_ADDR=localhost:6380 \
-	TODO_DATABASE_URL="postgres://todo:todo@localhost:5433/todo?sslmode=disable" \
+	@export PG_ADDR=localhost:5433 KAFKA_BROKERS=localhost:9094 REDIS_ADDR=localhost:6380 \
+	TODO_DATABASE_URL="postgres://todo:todo@localhost:5433/todo?sslmode=disable"; \
+		$(MAKE) db-migrate up && \
 		go test -p 1 -tags=integration ./... ; \
 		status=$$?; \
 		docker compose down -v; \
@@ -71,8 +72,19 @@ verify-integration:
 		redis_addr="$$BG_SERVICE_REDIS:$${BG_SERVICE_REDIS_PORT:-6379}"; \
 	fi; \
 	echo "verify-integration: resolved PG_ADDR=$$pg_addr KAFKA_BROKERS=$$kafka_brokers REDIS_ADDR=$$redis_addr"; \
+	dsn="$${TODO_DATABASE_URL:-postgres://todo:todo@$$pg_addr/todo?sslmode=disable}"; \
+	echo "verify-integration: applying database migrations"; \
+	TODO_DATABASE_URL="$$dsn" $(MAKE) db-migrate up || exit $$?; \
 	PG_ADDR="$$pg_addr" \
 	KAFKA_BROKERS="$$kafka_brokers" \
 	REDIS_ADDR="$$redis_addr" \
-	TODO_DATABASE_URL="postgres://todo:todo@$$pg_addr/todo?sslmode=disable" \
+	TODO_DATABASE_URL="$$dsn" \
 		go test -p 1 -tags=integration ./...
+
+# The action word is a Make goal too; up/down keep it from being reported as missing.
+db-migrate:
+	TODO_DATABASE_URL="$${TODO_DATABASE_URL:-postgres://todo:todo@localhost:5433/todo?sslmode=disable}" \
+		go run ./cmd/db-migrate $(filter-out $@,$(MAKECMDGOALS))
+
+up down:
+	@:

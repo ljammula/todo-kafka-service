@@ -24,8 +24,9 @@ From `README.md` and the `Makefile`:
 - A function has at most 25 decision points: every target runs
   `TestFunctionComplexity` (`complexity_test.go`). `handleTodos` is listed
   there as a known exception; it may shrink, not grow.
-- A migration is the next number in `pgstore/migrations/`
-  (`NNN_description.sql`, no gaps). Never edit one that has shipped.
+- A migration is the next number in `migrations/`
+  (`NNNNNN_description.up.sql` and `.down.sql`, no gaps). Never edit one
+  that has shipped.
 - Integration tests carry the `integration` build tag and run with `-p 1`:
   packages share one `todos` table.
 - `docs/design-guide/go-service.md` is the team design guide: the decisions

@@ -46,8 +46,14 @@ Startup, both processes:
 ```text
 REDIS_ADDR set and PING ok? --no--> exit 1
             | yes
-pgstore.New: pg_advisory_xact_lock -> apply pending pgstore/migrations/*.sql
-             -> record each in schema_migrations   (one transaction)
+pgstore.New: connect to the already-migrated Postgres database
+```
+
+Apply schema changes separately before starting the service:
+
+```sh
+docker compose up -d
+make db-migrate up
 ```
 
 ## Services
@@ -79,9 +85,21 @@ pgstore.New: pg_advisory_xact_lock -> apply pending pgstore/migrations/*.sql
 
 ## Migrations
 
-`pgstore/migrations/NNN_description.sql`, versions 1..N with no gaps, applied
-in order by `pgstore.New`. Add a migration as the next number; never edit
-one that has shipped.
+Migrations live in `migrations/` as paired
+`NNNNNN_description.up.sql` and `.down.sql` files. Add the next version
+without gaps; never edit a migration that has shipped. They are embedded in
+the `db-migrate` command, so the command does not depend on the current
+working directory.
+
+| Command | Behaviour |
+|---|---|
+| `make db-migrate up` | Apply all pending migrations |
+| `make db-migrate down` | Roll back all applied migrations |
+
+Both commands use `TODO_DATABASE_URL`, defaulting to the Postgres address
+published by `docker-compose.yml` (`localhost:5433`). `make verify-integration`
+applies migrations before running integration tests, including when
+Buildgate provides Postgres as a sidecar.
 
 ## Verify
 
@@ -89,7 +107,7 @@ one that has shipped.
 |---|---|
 | `make test` | nothing (unit tests) |
 | `make verify` | Docker; starts and removes the compose stack |
-| `make verify-integration` | Postgres, Kafka and Redis already running (`BG_SERVICE_*` or `PG_ADDR`/`KAFKA_BROKERS`/`REDIS_ADDR`); buildgate's `verify_command` |
+| `make verify-integration` | Postgres, Kafka and Redis already running (`BG_SERVICE_*` or `PG_ADDR`/`KAFKA_BROKERS`/`REDIS_ADDR`); applies migrations and is Buildgate's `verify_command` |
 
 Every target runs `TestFunctionComplexity` (`complexity_test.go`): a function may have at most 25
 decision points. `handleTodos` was over the limit when the check was added and is listed there as a

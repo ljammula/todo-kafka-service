@@ -6,7 +6,8 @@
 |---|---|
 | `main.go`, `id.go`, `idempotency.go`, `kafka.go`, `publisher.go`, `summary.go` | The API process (package `main`): HTTP handlers, the in-memory todo store, the idempotency store, the Kafka publisher |
 | `cmd/consumer/` | The consumer process: `todos.created` events into Postgres |
-| `pgstore/` | Postgres access and `pgstore/migrations/NNN_description.sql` |
+| `pgstore/` | Postgres access |
+| `migrations/`, `internal/dbmigrate/`, `cmd/db-migrate/` | Embedded SQL migrations and the `golang-migrate` command |
 | `cache/` | Redis read-through cache for the durable list |
 | `event/` | The `TodoCreated` event type |
 | `docs/design-guide/go-service.md` | The team design guide buildgate's spec drafting and planning read (`design_guide: go-service` in `.factory.yml`) |

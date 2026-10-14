@@ -26,13 +26,14 @@ type Todo struct {
 }
 
 // Store is a connection pool against one Postgres database whose schema
-// Migrate has already brought up to date.
+// has already been migrated.
 type Store struct {
 	db *sql.DB
 }
 
-// New opens a connection pool against dsn and applies any pending
-// migrations (see Migrate). dsn is a standard postgres:// connection string, e.g.
+// New opens a connection pool against dsn. Apply migrations separately with
+// `make db-migrate up` before starting the service. dsn is a standard
+// postgres:// connection string, e.g.
 // "postgres://todo:todo@localhost:5433/todo?sslmode=disable".
 func New(dsn string) (*Store, error) {
 	db, err := sql.Open("postgres", dsn)
@@ -42,10 +43,6 @@ func New(dsn string) (*Store, error) {
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
-	}
-	if err := Migrate(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return &Store{db: db}, nil
 }
