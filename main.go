@@ -40,6 +40,18 @@ func (s *Store) List() []Todo {
 	return out
 }
 
+func (s *Store) FilterDone(done bool) []Todo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Todo, 0)
+	for _, todo := range s.todos {
+		if todo.Done == done {
+			out = append(out, todo)
+		}
+	}
+	return out
+}
+
 // AddWithID inserts a todo under an id the caller already generated (see
 // newTodoID), rather than assigning one here, so the same id can be used
 // both for this immediate in-memory response and for the Kafka event a
@@ -129,6 +141,16 @@ type DurableLister interface {
 var durableStore DurableLister
 
 func handleTodoCollection(w http.ResponseWriter, r *http.Request) {
+	doneValues, hasDone := r.URL.Query()["done"]
+	var done bool
+	if hasDone {
+		if len(doneValues) != 1 || (doneValues[0] != "true" && doneValues[0] != "false") {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		done = doneValues[0] == "true"
+	}
+
 	values, present := r.URL.Query()["limit"]
 	if present {
 		if len(values) != 1 {
@@ -141,10 +163,17 @@ func handleTodoCollection(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		todos := store.List()
+		if hasDone {
+			todos = store.FilterDone(done)
+		}
 		if limit < len(todos) {
 			todos = todos[:limit]
 		}
 		jsonNewline(todos, w)
+		return
+	}
+	if hasDone {
+		jsonNewline(store.FilterDone(done), w)
 		return
 	}
 	jsonNewline(store.List(), w)

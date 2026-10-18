@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -104,6 +105,101 @@ func TestListEmpty(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&todos)
 	if len(todos) != 0 {
 		t.Fatalf("expected empty list, got %d items", len(todos))
+	}
+}
+
+func TestListDoneFilter(t *testing.T) {
+	initial := []Todo{
+		{ID: "one", Title: "first", Done: false},
+		{ID: "two", Title: "second", Done: true},
+		{ID: "three", Title: "third", Done: true},
+		{ID: "four", Title: "fourth", Done: false},
+	}
+	tests := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantIDs    []string
+		todos      []Todo
+	}{
+		{name: "unfiltered", wantStatus: http.StatusOK, wantIDs: []string{"one", "two", "three", "four"}},
+		{name: "done true", query: "?done=true", wantStatus: http.StatusOK, wantIDs: []string{"two", "three"}},
+		{name: "done false", query: "?done=false", wantStatus: http.StatusOK, wantIDs: []string{"one", "four"}},
+		{name: "true no matches", query: "?done=true", wantStatus: http.StatusOK, wantIDs: []string{}, todos: []Todo{{ID: "one", Done: false}}},
+		{name: "false no matches", query: "?done=false", wantStatus: http.StatusOK, wantIDs: []string{}, todos: []Todo{{ID: "one", Done: true}}},
+		{name: "empty", query: "?done=", wantStatus: http.StatusBadRequest},
+		{name: "case variant", query: "?done=True", wantStatus: http.StatusBadRequest},
+		{name: "arbitrary", query: "?done=yes", wantStatus: http.StatusBadRequest},
+		{name: "numeric", query: "?done=1", wantStatus: http.StatusBadRequest},
+		{name: "repeated", query: "?done=true&done=false", wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetStore()
+			todos := initial
+			if tt.todos != nil {
+				todos = tt.todos
+			}
+			store.todos = append([]Todo(nil), todos...)
+			before := store.List()
+			w := httptest.NewRecorder()
+			handleTodos(w, httptest.NewRequest(http.MethodGet, "/todos"+tt.query, nil))
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, w.Code)
+			}
+			if tt.wantStatus == http.StatusBadRequest {
+				if w.Body.Len() != 0 {
+					t.Fatalf("expected empty response body, got %q", w.Body.String())
+				}
+				if got := store.List(); !reflect.DeepEqual(got, before) {
+					t.Fatalf("store changed: got %+v, want %+v", got, before)
+				}
+				return
+			}
+			var got []Todo
+			if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if len(got) != len(tt.wantIDs) {
+				t.Fatalf("got %d todos, want %d", len(got), len(tt.wantIDs))
+			}
+			for i, id := range tt.wantIDs {
+				if got[i].ID != id {
+					t.Fatalf("todo %d has ID %q, want %q", i, got[i].ID, id)
+				}
+			}
+		})
+	}
+
+	resetStore()
+	store.todos = []Todo{{ID: "only", Done: false}}
+	w := httptest.NewRecorder()
+	handleTodos(w, httptest.NewRequest(http.MethodGet, "/todos?done=true", nil))
+	if got := strings.TrimSpace(w.Body.String()); got != "[]" {
+		t.Fatalf("no-match response = %q, want []", got)
+	}
+}
+
+func TestDoneFilterDoesNotAffectItemLookup(t *testing.T) {
+	initial := Todo{ID: "wanted", Title: "keep me", Done: true}
+	for _, query := range []string{"", "?done=true", "?done=false", "?done=invalid", "?done=true&done=false"} {
+		t.Run(query, func(t *testing.T) {
+			resetStore()
+			store.todos = []Todo{initial}
+			w := httptest.NewRecorder()
+			handleTodos(w, httptest.NewRequest(http.MethodGet, "/todos/wanted"+query, nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			var got Todo
+			if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if got != initial {
+				t.Fatalf("got %+v, want %+v", got, initial)
+			}
+		})
 	}
 }
 

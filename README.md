@@ -78,11 +78,12 @@ make db-migrate up
 
 | Method and path | Behaviour |
 |---|---|
-| `GET /todos`, `GET /todos/{id}` | This API process's in-memory todos |
+| `GET /todos` | This API process's in-memory collection; optional exact `done=true` (completed) or `done=false` (incomplete) filter, other present values return 400 |
+| `GET /todos/{id}` | Separate in-memory item lookup; `done` query parameters do not apply collection filtering or validation |
 | `GET /todos/summary` | Synchronous counts of this API process's in-memory todos; not a durable or cluster-wide aggregate |
 | `POST /todos` | Publish `todos.created`; optional `Idempotency-Key` header (max 255 chars) |
 | `PUT`, `PATCH`, `DELETE /todos/{id}` | In-memory todos only |
-| `GET /todos/durable` | Postgres todos, oldest `created_at` first (stamped by the API, not the consumer), cached in Redis for 30s |
+| `GET /todos/durable` | Unchanged Postgres-backed collection, oldest `created_at` first (stamped by the API, not the consumer), cached in Redis for 30s; its behavior is separate from the in-memory `/todos` filter |
 
 `GET /todos/summary` returns integer `total`, `done`, and `open` counts from
 the in-memory store snapshot of the API process handling the request. It does
