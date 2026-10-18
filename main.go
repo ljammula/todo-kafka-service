@@ -317,6 +317,30 @@ type durableStats struct {
 	Done  int `json:"done"`
 }
 
+type todoSummary struct {
+	Total int `json:"total"`
+	Done  int `json:"done"`
+	Open  int `json:"open"`
+}
+
+func handleTodosSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	todos := store.List()
+	summary := todoSummary{Total: len(todos)}
+	for _, todo := range todos {
+		if todo.Done {
+			summary.Done++
+		}
+	}
+	summary.Open = summary.Total - summary.Done
+	jsonNewline(summary, w)
+}
+
 // readDurable centralizes the durable list read and its error responses. Both
 // durable endpoints therefore use exactly the same cache/Postgres path.
 func readDurable(w http.ResponseWriter) ([]pgstore.Todo, bool) {
@@ -400,6 +424,7 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", handleHealthz)
 	mux.HandleFunc("/todos", handleTodos)
 	mux.HandleFunc("/todos/", handleTodos)
+	mux.HandleFunc("/todos/summary", handleTodosSummary)
 	mux.HandleFunc("/todos/durable", handleTodosDurable)
 	mux.HandleFunc("/todos/durable/stats", handleTodosDurableStats)
 }
