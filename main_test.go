@@ -751,6 +751,138 @@ func TestDurableRoutes(t *testing.T) {
 	}
 }
 
+func assertTodoSummary(t *testing.T, w *httptest.ResponseRecorder, total, done, open int) {
+	t.Helper()
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected application/json, got %q", got)
+	}
+	var got map[string]json.RawMessage
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	want := map[string]int{"total": total, "done": done, "open": open}
+	if len(got) != len(want) {
+		t.Fatalf("summary has fields %#v, want exactly total, done, and open", got)
+	}
+	for key, expected := range want {
+		raw, ok := got[key]
+		if !ok {
+			t.Fatalf("summary is missing %q: %#v", key, got)
+		}
+		var actual int
+		if err := json.Unmarshal(raw, &actual); err != nil {
+			t.Fatalf("summary field %q is not an integer: %v", key, err)
+		}
+		if actual != expected {
+			t.Errorf("summary %s = %d, want %d", key, actual, expected)
+		}
+	}
+}
+
+func TestTodosSummaryRoute(t *testing.T) {
+	defer resetStore()
+	previousDurableStore := durableStore
+	defer func() { durableStore = previousDurableStore }()
+	calls := 0
+	durableStore = countingStatsDurable{
+		todos: []pgstore.Todo{{Done: true}, {Done: true}, {Done: true}},
+		calls: &calls,
+	}
+
+	tests := []struct {
+		name  string
+		todos []Todo
+		total int
+		done  int
+		open  int
+	}{
+		{name: "empty"},
+		{
+			name: "mixed",
+			todos: []Todo{
+				{ID: "open-one", Title: "open"},
+				{ID: "done-one", Title: "done", Done: true},
+				{ID: "open-two", Title: "also open"},
+			},
+			total: 3,
+			done:  1,
+			open:  2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetStore()
+			for _, todo := range tt.todos {
+				store.AddWithID(todo.ID, todo.Title)
+				if todo.Done {
+					store.Update(todo.ID, todo.Title, true)
+				}
+			}
+			mux := http.NewServeMux()
+			registerRoutes(mux)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/todos/summary", nil))
+			assertTodoSummary(t, w, tt.total, tt.done, tt.open)
+		})
+	}
+	if calls != 0 {
+		t.Fatalf("summary read the durable store %d times", calls)
+	}
+}
+
+func TestTodosSummaryTracksLocalMutations(t *testing.T) {
+	resetStore()
+	defer resetStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux)
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(body)))
+		return w
+	}
+	create := func(title string) Todo {
+		w := request(http.MethodPost, "/todos", `{"title":"`+title+`"}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create returned %d, want 201", w.Code)
+		}
+		var todo Todo
+		if err := json.NewDecoder(w.Body).Decode(&todo); err != nil {
+			t.Fatalf("decode created todo: %v", err)
+		}
+		return todo
+	}
+	assertCounts := func(total, done, open int) {
+		assertTodoSummary(t, request(http.MethodGet, "/todos/summary", ""), total, done, open)
+	}
+
+	first := create("first")
+	second := create("second")
+	assertCounts(2, 0, 2)
+
+	if w := request(http.MethodPatch, "/todos/"+second.ID, `{"done":true}`); w.Code != http.StatusOK {
+		t.Fatalf("PATCH returned %d, want 200", w.Code)
+	}
+	assertCounts(2, 1, 1)
+
+	if w := request(http.MethodPut, "/todos/"+first.ID, `{"title":"first updated","done":true}`); w.Code != http.StatusOK {
+		t.Fatalf("PUT returned %d, want 200", w.Code)
+	}
+	assertCounts(2, 2, 0)
+
+	if w := request(http.MethodPatch, "/todos/"+second.ID, `{"done":false}`); w.Code != http.StatusOK {
+		t.Fatalf("PATCH returned %d, want 200", w.Code)
+	}
+	assertCounts(2, 1, 1)
+
+	if w := request(http.MethodDelete, "/todos/"+second.ID, ""); w.Code != http.StatusNoContent {
+		t.Fatalf("DELETE returned %d, want 204", w.Code)
+	}
+	assertCounts(1, 1, 0)
+}
+
 func TestListAfterAdd(t *testing.T) {
 	resetStore()
 	handler("", "POST", `{"title":"a"}`)
