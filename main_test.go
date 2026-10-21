@@ -86,6 +86,55 @@ func TestHealthzRoute(t *testing.T) {
 	}
 }
 
+func TestVersion(t *testing.T) {
+	methods := []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions}
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			handleVersion(w, httptest.NewRequest(method, "/version", nil))
+			if method != http.MethodGet {
+				if w.Code != http.StatusMethodNotAllowed {
+					t.Fatalf("expected 405, got %d", w.Code)
+				}
+				if got := w.Header().Get("Allow"); got != http.MethodGet {
+					t.Fatalf("expected Allow: GET, got %q", got)
+				}
+				return
+			}
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			if got := w.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("expected application/json, got %q", got)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !reflect.DeepEqual(body, map[string]string{"service": "todo-kafka-service"}) {
+				t.Fatalf("unexpected response: %#v", body)
+			}
+		})
+	}
+}
+
+func TestVersionRoute(t *testing.T) {
+	mux := http.NewServeMux()
+	registerRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !reflect.DeepEqual(body, map[string]string{"service": "todo-kafka-service"}) {
+		t.Fatalf("unexpected response: %#v", body)
+	}
+}
+
 type recordingPublisher struct {
 	events []event.TodoCreated
 }
