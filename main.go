@@ -455,6 +455,7 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	jsonNewline(struct {
 		Service string `json:"service"`
 	}{Service: "todo-kafka-service"}, w)
