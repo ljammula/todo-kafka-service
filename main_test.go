@@ -117,6 +117,9 @@ func TestVersion(t *testing.T) {
 			if got := w.Header().Get("Content-Type"); got != "application/json" {
 				t.Fatalf("expected application/json, got %q", got)
 			}
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("expected Cache-Control: no-store, got %q", got)
+			}
 			var body map[string]string
 			if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 				t.Fatalf("decode response: %v", err)
