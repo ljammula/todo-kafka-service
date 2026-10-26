@@ -104,6 +104,9 @@ func TestVersion(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			handleVersion(w, httptest.NewRequest(tt.method, "/version", nil))
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("expected Cache-Control: no-store, got %q", got)
+			}
 			if tt.method != http.MethodGet {
 				if w.Code != http.StatusMethodNotAllowed {
 					t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)

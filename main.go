@@ -451,6 +451,7 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 // handleVersion serves GET /version; README.md's Endpoints table documents it.
 func handleVersion(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		w.WriteHeader(http.StatusMethodNotAllowed)
