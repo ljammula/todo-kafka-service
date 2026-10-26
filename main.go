@@ -449,8 +449,21 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}{Status: "ok"}, w)
 }
 
+// handleVersion serves GET /version; README.md's Endpoints table documents it.
+func handleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	jsonNewline(struct {
+		Service string `json:"service"`
+	}{Service: "todo-kafka-service"}, w)
+}
+
 func registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", handleHealthz)
+	mux.HandleFunc("/version", handleVersion)
 	mux.HandleFunc("/todos", handleTodos)
 	mux.HandleFunc("/todos/", handleTodos)
 	mux.HandleFunc("/todos/summary", handleTodosSummary)
