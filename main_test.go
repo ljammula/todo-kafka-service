@@ -94,6 +94,7 @@ func TestVersionHandler(t *testing.T) {
 	}{
 		{name: "GET", method: http.MethodGet, status: http.StatusOK},
 		{name: "HEAD", method: http.MethodHead, status: http.StatusMethodNotAllowed},
+		{name: "TRACE", method: http.MethodTrace, status: http.StatusMethodNotAllowed},
 		{name: "POST", method: http.MethodPost, status: http.StatusMethodNotAllowed},
 		{name: "PUT", method: http.MethodPut, status: http.StatusMethodNotAllowed},
 		{name: "PATCH", method: http.MethodPatch, status: http.StatusMethodNotAllowed},
